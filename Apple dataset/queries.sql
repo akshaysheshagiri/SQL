@@ -143,4 +143,118 @@ FROM
     where w.claim_date>=current_date()-interval 2 year
     group by c.category_name;
     -- % chance of receiving warranty claims after each percentage for each country--
+  SELECT 
+    country,
+    total_unit_sold, 
+    total_claim,
+    COALESCE(( NULLIF(total_claim, 0)/total_unit_sold ) * 100, 0) AS risk
+FROM
+    (SELECT 
+        st.country,
+        SUM(s.quantity) AS total_unit_sold,
+        COUNT(w.claim_id) AS total_claim
+    FROM
+        sales AS s
+    JOIN stores AS st ON s.store_id = st.store_id
+    LEFT JOIN warranty AS w ON w.sale_id = s.sale_id
+    GROUP BY st.country) AS T1
+ORDER BY risk desc;
+-- Analyze each stores year by year growth ratio(YOY)--
+with Yearly_sales as(
+SELECT 
+    s.store_id AS id,
+    st.store_name AS name,
+    EXTRACT(YEAR FROM sale_date) AS year,
+    SUM(s.quantity * p.price) AS total_sale
+FROM
+    sales AS s
+        JOIN
+    products AS p ON s.product_id = p.product_id
+        JOIN
+    stores AS st ON st.store_id = s.store_id
+GROUP BY id , year , name order by name,year),
+growth_ratio as (
+select 
+name,
+year, 
+lag(total_sale,1)over(partition by name order by year asc) as last_year_sale,
+total_sale as current_year_sale
+from yearly_sales
+)
+ SELECT 
+    name,
+    year,
+    last_year_sale,
+    current_year_sale,
+    (current_year_sale - last_year_sale) / last_year_sale * 100 AS YOY
+FROM
+    growth_ratio
+WHERE
+    last_year_sale IS NOT NULL
+        AND year <> EXTRACT(YEAR FROM CURRENT_DATE());
+
+-- correlation between price and warranty claim in last 5 years--
+SELECT 
     
+    case 
+    when p.price<500 then 'less_expensive'
+    when p.price between 500 and 1000 then 'mid_range'
+    else 'expensive'
+    end as price_segment,
+    count(w.claim_id) as total_claim
+FROM
+    warranty AS w
+        LEFT JOIN
+    sales AS s ON w.sale_id = s.sale_id
+        JOIN
+    products AS p ON p.product_id = s.product_id
+WHERE
+    Claim_date >= CURRENT_DATE() - INTERVAL 5 YEAR 
+    group by price_segment;
+    
+    -- store with highest paid_repair claims related to total_claims filed
+with paid_repair as(
+SELECT 
+    s.store_id, COUNT(w.claim_id) AS paid_repaired
+FROM
+    sales AS s
+        RIGHT JOIN
+    warranty AS w ON w.sale_id = s.sale_id
+WHERE
+    w.repair_status = 'Paid repaired'
+GROUP BY store_id),
+
+total_repaired as
+(SELECT 
+    s.store_id, COUNT(w.claim_id) AS total_repaired
+FROM
+    sales AS s
+        RIGHT JOIN
+    warranty AS w ON w.sale_id = s.sale_id
+GROUP BY store_id)
+select 
+tr.store_id,
+pr.paid_repaired,
+tr.total_repaired,
+pr.paid_repaired/tr.total_repaired * 100 as paid_repair_percentage
+from paid_repair as pr 
+join total_repaired tr on pr.store_id=tr.store_id;
+
+-- monthly running total of sales for each store over past 4 years and trend comparison --
+with monthly_sale as 
+(SELECT 
+    store_id,
+    extract(month from sale_date) AS month,
+    EXTRACT(YEAR FROM sale_date) AS year,
+    SUM(p.price * s.quantity) AS total_sales
+FROM
+    sales AS s
+        JOIN
+    products AS p ON s.product_id = p.product_id
+GROUP BY store_id , month , year
+order by store_id,year,month
+)
+select store_id, month, year, total_sales, sum(total_sales) over(partition by store_id order by year,month) as running_total from monthly_sale;
+
+
+
